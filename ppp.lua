@@ -1,10 +1,9 @@
--- SWILL // MM2 AUTO FARMER V8 // ADVANCED DETECTION (NON-STANDARD FONTS)
--- Детекция активности игры по уникальным элементам MM2, не зависящая от текста.
+-- SWILL // MM2 AUTO FARMER V10 // ENHANCED GAME DETECTION + DEBUG
+-- Улучшенная детекция активности с выводом в консоль для отладки.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- Глобальные переменные
@@ -13,122 +12,182 @@ local isEvading = false
 local isGameActive = false
 local currentNoclip = nil
 local currentConnection = nil
-local lastGroundPosition = nil
+local debugMode = true  -- Включить вывод отладки в консоль
 
--- ========== РАСШИРЕННАЯ ДЕТЕКЦИЯ АКТИВНОСТИ (без опоры на текст) ==========
+-- ========== УЛУЧШЕННАЯ ДЕТЕКЦИЯ АКТИВНОСТИ ИГРЫ ==========
 local function isGameActuallyActive()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then return false end
+    if not playerGui then 
+        if debugMode then print("[DEBUG] PlayerGui not found") end
+        return false 
+    end
     
-    -- 1. Проверка наличия таймера (формат "0:00" или "00:00") - всегда есть в активном раунде
+    -- 1. Поиск таймера (расширенный)
     local hasTimer = false
+    local timerText = nil
     for _, obj in pairs(playerGui:GetDescendants()) do
         if obj:IsA("TextLabel") and obj.Visible then
             local text = obj.Text or ""
-            -- Таймер обычно выглядит как "2:30" или "00:00"
-            if string.match(text, "^%d+:%d+$") or string.match(text, "^%d%d:%d%d$") then
+            -- Ищем текст, содержащий двоеточие и цифры, например "2:30" или "00:00"
+            if string.match(text, "%d+:%d+") then
                 hasTimer = true
+                timerText = text
+                break
+            end
+            -- Альтернатива: проверка родительских объектов
+            if obj.Parent and obj.Parent.Name:lower():find("timer") then
+                hasTimer = true
+                timerText = text
                 break
             end
         end
+        -- Таймер может быть в ImageLabel с текстовым потомком
+        if obj:IsA("ImageLabel") then
+            for _, child in pairs(obj:GetChildren()) do
+                if child:IsA("TextLabel") and child.Visible then
+                    local text = child.Text or ""
+                    if string.match(text, "%d+:%d+") then
+                        hasTimer = true
+                        timerText = text
+                        break
+                    end
+                end
+            end
+        end
     end
+    if debugMode and hasTimer then print("[DEBUG] Timer found: " .. (timerText or "unknown")) end
     
-    -- 2. Проверка наличия кнопки "Reset" (появляется только когда игрок жив и в раунде)
+    -- 2. Кнопка Reset
     local hasResetButton = false
     for _, obj in pairs(playerGui:GetDescendants()) do
         if obj:IsA("TextButton") and obj.Visible and obj.Text == "Reset" then
             hasResetButton = true
+            if debugMode then print("[DEBUG] Reset button found") end
             break
         end
     end
     
-    -- 3. Проверка наличия иконок оружия/ролей (убийца, шериф) — уникальные элементы MM2
-    local hasRoleIcon = false
+    -- 3. Роль игрока (Innocent, Sheriff, Murderer)
+    local hasRoleText = false
+    local roleText = nil
+    for _, obj in pairs(playerGui:GetDescendants()) do
+        if obj:IsA("TextLabel") and obj.Visible then
+            local text = obj.Text or ""
+            if text == "Innocent" or text == "Sheriff" or text == "Murderer" then
+                hasRoleText = true
+                roleText = text
+                break
+            end
+        end
+    end
+    if debugMode and hasRoleText then print("[DEBUG] Role found: " .. (roleText or "unknown")) end
+    
+    -- 4. Наличие иконки оружия (у убийцы или шерифа)
+    local hasWeaponIcon = false
     for _, obj in pairs(playerGui:GetDescendants()) do
         if obj:IsA("ImageLabel") and obj.Visible then
             local image = obj.Image or ""
-            -- Ищем характерные для MM2 иконки (можно подставить конкретные ID, но они могут меняться)
-            if string.find(image, "rbxasset") and (string.find(image, "knife") or string.find(image, "gun") or string.find(image, "sheriff")) then
-                hasRoleIcon = true
+            if string.find(image, "knife") or string.find(image, "gun") or string.find(image, "sheriff") then
+                hasWeaponIcon = true
+                if debugMode then print("[DEBUG] Weapon icon found") end
                 break
             end
         end
     end
     
-    -- 4. Проверка, что игрок не в режиме спектатора (камера не привязана к чужому персонажу)
+    -- 5. Проверка камеры (спектатор или нет)
     local camera = workspace.CurrentCamera
     local isSpectating = false
-    if camera and camera.CameraSubject and camera.CameraSubject ~= LocalPlayer.Character then
-        isSpectating = true
+    if camera and camera.CameraSubject then
+        if camera.CameraSubject ~= LocalPlayer.Character then
+            isSpectating = true
+            if debugMode then print("[DEBUG] Spectating: camera subject is not local character") end
+        end
     end
     
-    -- 5. Проверка, что персонаж жив и существует
+    -- 6. Жив ли персонаж
     local isAlive = false
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-        local humanoid = LocalPlayer.Character.Humanoid
-        if humanoid.Health > 0 then
+        if LocalPlayer.Character.Humanoid.Health > 0 then
             isAlive = true
+            if debugMode then print("[DEBUG] Character is alive") end
         end
     end
     
-    -- 6. Проверка наличия затемняющего фона (лобби/спектатор часто имеет полупрозрачный черный фон)
-    local hasDimBackground = false
-    for _, obj in pairs(playerGui:GetDescendants()) do
-        if obj:IsA("Frame") and obj.BackgroundTransparency < 0.5 and obj.Size == UDim2.new(1, 0, 1, 0) then
-            hasDimBackground = true
-            break
-        end
-    end
-    
-    -- Логика: игра активна, если есть таймер ИЛИ кнопка Reset, И мы не в спектаторе, И жив.
-    -- Если есть затемняющий фон и нет таймера и нет кнопки Reset — скорее всего лобби.
-    if (hasTimer or hasResetButton or hasRoleIcon) and not isSpectating and isAlive then
-        return true
-    elseif hasDimBackground and not hasTimer and not hasResetButton then
-        return false
-    elseif isSpectating then
-        return false
-    elseif not isAlive then
-        return false
-    end
-    
-    -- Дополнительная проверка: если нет других игроков на карте — лобби
+    -- 7. Количество других игроков
     local otherPlayers = 0
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             otherPlayers = otherPlayers + 1
         end
     end
-    if otherPlayers == 0 then
-        return false
+    if debugMode then print("[DEBUG] Other players: " .. otherPlayers) end
+    
+    -- Логика определения: игра активна, если есть хотя бы два из признаков: таймер, роль, кнопка Reset, и при этом не спектатор и жив.
+    local positiveCount = 0
+    if hasTimer then positiveCount = positiveCount + 1 end
+    if hasResetButton then positiveCount = positiveCount + 1 end
+    if hasRoleText then positiveCount = positiveCount + 1 end
+    if hasWeaponIcon then positiveCount = positiveCount + 1 end
+    
+    local active = (positiveCount >= 2) and not isSpectating and isAlive and otherPlayers > 0
+    
+    if debugMode then
+        print("[DEBUG] Positive indicators: " .. positiveCount)
+        print("[DEBUG] Is spectating: " .. tostring(isSpectating))
+        print("[DEBUG] Is alive: " .. tostring(isAlive))
+        print("[DEBUG] Game active: " .. tostring(active))
     end
     
-    -- Если ничего не определило, считаем неактивным (безопаснее)
+    return active
+end
+
+-- ========== ЗАЩИТА ОТ ПРОВАЛИВАНИЯ ==========
+local function getGroundPosition(position, ignoreObjects)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    local ignoreList = {LocalPlayer.Character}
+    if ignoreObjects then
+        for _, obj in pairs(ignoreObjects) do
+            table.insert(ignoreList, obj)
+        end
+    end
+    rayParams.FilterDescendantsInstances = ignoreList
+    
+    local rayOrigin = position + Vector3.new(0, 5, 0)
+    local rayDirection = Vector3.new(0, -25, 0)
+    local result = Workspace:Raycast(rayOrigin, rayDirection, rayParams)
+    
+    if result then
+        return result.Position + Vector3.new(0, 3, 0)
+    end
+    return nil
+end
+
+local function isFalling()
+    if not LocalPlayer.Character then return false end
+    local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    local velocity = rootPart.AssemblyLinearVelocity
+    if velocity.Y < -20 and humanoid.FloorMaterial == Enum.Material.Air then
+        return true
+    end
     return false
 end
 
--- ========== ЗАЩИТА ОТ ПРОВАЛИВАНИЯ (без изменений) ==========
-local function getGroundPosition(position)
-    local rayOrigin = position + Vector3.new(0, 5, 0)
-    local rayDirection = Vector3.new(0, -20, 0)
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    local result = Workspace:Raycast(rayOrigin, rayDirection, rayParams)
-    if result then
-        return result.Position + Vector3.new(0, 3, 0)
-    else
-        return nil
-    end
-end
-
-local function fixPosition()
+local function fixPositionIfFalling()
+    if not isFalling() then return end
+    
     if not LocalPlayer.Character then return end
     local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
+    
     local groundPos = getGroundPosition(rootPart.Position)
     if groundPos then
-        if math.abs(rootPart.Position.Y - groundPos.Y) > 5 then
+        if math.abs(rootPart.Position.Y - groundPos.Y) > 10 then
             rootPart.CFrame = CFrame.new(groundPos)
             if LocalPlayer.Character.Humanoid then
                 LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Landed)
@@ -139,7 +198,7 @@ local function fixPosition()
     end
 end
 
--- ========== ОСТАЛЬНЫЕ ФУНКЦИИ (поиск монет, игроки, движение) ==========
+-- ========== ПОИСК МОНЕТ ==========
 local function getCoins()
     local coins = {}
     for _, v in pairs(Workspace:GetDescendants()) do
@@ -156,20 +215,28 @@ end
 
 local function getNearestCoin()
     local coins = getCoins()
-    if #coins == 0 then return nil end
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    if #coins == 0 then return nil, nil end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil, nil end
+    
     local rootPos = LocalPlayer.Character.HumanoidRootPart.Position
     local nearest, nearestDist = nil, 100
+    local nearestHeightDiff = 0
+    
     for _, coin in pairs(coins) do
         local dist = (coin.Position - rootPos).Magnitude
-        if dist < nearestDist then
+        local heightDiff = math.abs(coin.Position.Y - rootPos.Y)
+        
+        -- Увеличил допустимую разницу высоты до 15, чтобы монеты на лестницах/рампах собирались
+        if dist < nearestDist and heightDiff < 15 then
             nearestDist = dist
             nearest = coin
+            nearestHeightDiff = heightDiff
         end
     end
-    return nearest, nearestDist
+    return nearest, nearestDist, nearestHeightDiff
 end
 
+-- ========== ИГРОКИ ==========
 local function getNearbyPlayers(radius)
     radius = radius or 50
     local nearby = {}
@@ -187,6 +254,7 @@ local function getNearbyPlayers(radius)
     return nearby
 end
 
+-- ========== НОКЛИП ==========
 local function setNoclip(state)
     if not LocalPlayer.Character then return end
     if state then
@@ -220,10 +288,17 @@ local function setNoclip(state)
     end
 end
 
+-- ========== ДВИЖЕНИЕ ==========
 local function walkTo(position)
     if not LocalPlayer.Character then return false end
     local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
     if not humanoid then return false end
+    
+    local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if rootPart and math.abs(position.Y - rootPart.Position.Y) > 5 then
+        position = Vector3.new(position.X, rootPart.Position.Y, position.Z)
+    end
+    
     humanoid.WalkSpeed = 22
     humanoid:MoveTo(position)
     humanoid.AutoRotate = true
@@ -246,9 +321,11 @@ local function evadeFromPlayer(playerRoot)
     local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
     local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not rootPart then return end
+    
     local direction = (rootPart.Position - playerRoot.Position).Unit
     local evadePos = rootPart.Position + direction * 45
     evadePos = Vector3.new(evadePos.X, rootPart.Position.Y, evadePos.Z)
+    
     setNoclip(true)
     local oldSpeed = humanoid.WalkSpeed
     humanoid.WalkSpeed = 50
@@ -262,7 +339,8 @@ end
 local function startFarmer()
     if currentConnection then return end
     isRunning = true
-    print("[SWILL] Фармер активирован V8 (детекция без привязки к тексту)")
+    print("[SWILL] Фармер активирован V10 (улучшенная детекция с отладкой)")
+    print("[SWILL] Включен режим отладки. Смотрите консоль для диагностики.")
     
     currentConnection = RunService.Heartbeat:Connect(function()
         if not isRunning then return end
@@ -271,7 +349,7 @@ local function startFarmer()
         if active ~= isGameActive then
             isGameActive = active
             if not active then
-                print("[SWILL] Игра не активна (лобби/спектатор) - бот остановлен")
+                print("[SWILL] Игра не активна - бот остановлен")
                 stopMoving()
                 setNoclip(false)
             else
@@ -291,7 +369,7 @@ local function startFarmer()
         local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not humanoid or not rootPart then return end
         
-        fixPosition()
+        fixPositionIfFalling()
         
         local nearbyPlayers = getNearbyPlayers(40)
         
@@ -305,9 +383,9 @@ local function startFarmer()
         
         if #nearbyPlayers == 0 and not isEvading then
             setNoclip(false)
-            local targetCoin, distToCoin = getNearestCoin()
+            local targetCoin, distToCoin, heightDiff = getNearestCoin()
             
-            if targetCoin and distToCoin > 3 then
+            if targetCoin and distToCoin > 3 and heightDiff and heightDiff < 15 then
                 walkTo(targetCoin.Position)
                 if rootPart then
                     rootPart.CFrame = CFrame.new(rootPart.Position, targetCoin.Position)
@@ -317,9 +395,15 @@ local function startFarmer()
                 humanoid.WalkSpeed = 16
             else
                 if #getCoins() > 0 then
-                    local randomPos = rootPart.Position + Vector3.new(math.random(-25,25), 0, math.random(-25,25))
-                    randomPos = Vector3.new(randomPos.X, rootPart.Position.Y, randomPos.Z)
-                    walkTo(randomPos)
+                    local groundPos = getGroundPosition(rootPart.Position)
+                    if groundPos then
+                        local randomPos = groundPos + Vector3.new(math.random(-20,20), 0, math.random(-20,20))
+                        walkTo(randomPos)
+                    else
+                        local randomPos = rootPart.Position + Vector3.new(math.random(-20,20), 0, math.random(-20,20))
+                        randomPos = Vector3.new(randomPos.X, rootPart.Position.Y, randomPos.Z)
+                        walkTo(randomPos)
+                    end
                 else
                     stopMoving()
                 end
@@ -365,7 +449,7 @@ corner.Parent = frame
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 30)
 title.Position = UDim2.new(0, 0, 0, 0)
-title.Text = "SWILL FARMER V8"
+title.Text = "SWILL FARMER V10"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.BackgroundTransparency = 1
 title.Font = Enum.Font.GothamBold
@@ -446,5 +530,5 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     end
 end)
 
-print("[SWILL] V8 ЗАГРУЖЕН - ДЕТЕКЦИЯ АКТИВНОСТИ БЕЗ ОПОРЫ НА ТЕКСТ")
-print("[SWILL] Используются: таймер, кнопка Reset, иконки ролей, состояние камеры")
+print("[SWILL] V10 ЗАГРУЖЕН - УЛУЧШЕННАЯ ДЕТЕКЦИЯ АКТИВНОСТИ ИГРЫ")
+print("[SWILL] Включена отладка. Если бот не работает, проверьте консоль (F9).")
