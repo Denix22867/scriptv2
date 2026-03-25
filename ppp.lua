@@ -1,62 +1,158 @@
--- SWILL // MM2 AUTO FARMER V5 // NO TELEPORT // NATURAL MOVEMENT
--- Полностью переработанная система движения. Никаких телепортаций и улетаний.
+-- SWILL // MM2 AUTO FARMER V6 // FULL SCREEN DETECTION // NO FALSE MOVEMENT
+-- Полная детекция всех экранов ожидания, лобби, спектатора
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 
 -- Глобальные переменные
 local isRunning = false
 local isEvading = false
+local isGameActive = false
 local currentNoclip = nil
 local currentConnection = nil
-local currentTarget = nil
-local currentWalkConnection = nil
 
--- Функция проверки экрана ожидания
-local function isWaitingForTurn()
+-- РАСШИРЕННАЯ ФУНКЦИЯ ПРОВЕРКИ АКТИВНОСТИ ИГРЫ
+local function isGameActuallyActive()
+    -- Проверка 1: Экран ожидания через PlayerGui
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then return false end
-    
-    for _, obj in pairs(playerGui:GetDescendants()) do
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-            local text = string.upper(obj.Text or "")
-            if string.find(text, "WAITING") and string.find(text, "TURN") then
-                return true
+    if playerGui then
+        -- Ищем любые элементы с текстом ожидания
+        local allGui = playerGui:GetDescendants()
+        for _, obj in pairs(allGui) do
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                local text = string.upper(obj.Text or "")
+                local visible = true
+                if obj:IsA("TextLabel") and obj.Visible == false then visible = false end
+                if obj:IsA("TextButton") and obj.Visible == false then visible = false end
+                
+                if visible then
+                    -- Все варианты неактивного состояния
+                    if string.find(text, "WAITING") or 
+                       string.find(text, "SPECTATOR") or
+                       string.find(text, "SPECTATING") or
+                       string.find(text, "YOU ARE SPECTATING") or
+                       string.find(text, "WAITING FOR PLAYERS") or
+                       string.find(text, "ROUND ENDS") or
+                       string.find(text, "GAME OVER") or
+                       string.find(text, "YOU DIED") or
+                       string.find(text, "YOUR TURN") and string.find(text, "WAITING") or
+                       string.find(text, "NEXT ROUND") or
+                       string.find(text, "LOBBY") then
+                        return false
+                    end
+                end
             end
-            if string.find(text, "SPECTATING") then
-                return true
+            
+            -- Проверка ImageLabel с текстом внутри
+            if obj:IsA("ImageLabel") then
+                for _, child in pairs(obj:GetChildren()) do
+                    if child:IsA("TextLabel") and child.Visible then
+                        local text = string.upper(child.Text or "")
+                        if string.find(text, "WAITING") or string.find(text, "SPECTATOR") then
+                            return false
+                        end
+                    end
+                end
+            end
+            
+            -- Проверка Frame с затемнением (часто в лобби)
+            if obj:IsA("Frame") and obj.BackgroundTransparency < 0.5 and obj.Size == UDim2.new(1, 0, 1, 0) then
+                for _, child in pairs(obj:GetChildren()) do
+                    if child:IsA("TextLabel") and child.Visible then
+                        local text = string.upper(child.Text or "")
+                        if string.find(text, "WAITING") or string.find(text, "SPECTATOR") then
+                            return false
+                        end
+                    end
+                end
             end
         end
     end
-    return false
+    
+    -- Проверка 2: CoreGui (системные окна Roblox)
+    local coreGui = game:GetService("CoreGui"):GetChildren()
+    for _, gui in pairs(coreGui) do
+        if gui.Name == "RobloxGui" then
+            for _, obj in pairs(gui:GetDescendants()) do
+                if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and obj.Visible then
+                    local text = string.upper(obj.Text or "")
+                    if string.find(text, "WAITING") or string.find(text, "SPECTATOR") then
+                        return false
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Проверка 3: Статус персонажа (если персонаж мертв или не существует)
+    if LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid and humanoid.Health <= 0 then
+            return false
+        end
+    end
+    
+    -- Проверка 4: BillboardGui над головой (часто показывает статус)
+    if LocalPlayer.Character then
+        for _, obj in pairs(LocalPlayer.Character:GetDescendants()) do
+            if obj:IsA("BillboardGui") and obj.Enabled then
+                for _, textObj in pairs(obj:GetDescendants()) do
+                    if (textObj:IsA("TextLabel") or textObj:IsA("TextButton")) and textObj.Visible then
+                        local text = string.upper(textObj.Text or "")
+                        if string.find(text, "SPECTATOR") or string.find(text, "WAITING") then
+                            return false
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Проверка 5: Проверка через StarterGui (шаблоны интерфейса)
+    local starterGui = game:GetService("StarterGui"):GetChildren()
+    for _, gui in pairs(starterGui) do
+        if gui:IsA("ScreenGui") then
+            for _, obj in pairs(gui:GetDescendants()) do
+                if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and string.find(string.upper(obj.Text or ""), "WAITING") then
+                    return false
+                end
+            end
+        end
+    end
+    
+    -- Проверка 6: Если нет монет на карте в течение долгого времени (лобби)
+    local coins = 0
+    for _, v in pairs(Workspace:GetDescendants()) do
+        if v:IsA("BasePart") and v.Parent and (string.find(string.lower(v.Name or ""), "coin") or v.BrickColor == BrickColor.new("Bright yellow")) then
+            coins = coins + 1
+        end
+    end
+    
+    -- Если монет меньше 3 и игра должна быть активна - возможно лобби
+    if coins < 3 then
+        return false
+    end
+    
+    -- Если все проверки пройдены - игра активна
+    return true
 end
 
--- Поиск монет (улучшенный)
+-- Поиск монет
 local function getCoins()
     local coins = {}
     local workspaceItems = Workspace:GetDescendants()
     
     for _, v in pairs(workspaceItems) do
-        if v:IsA("BasePart") and v.Parent then
+        if v:IsA("BasePart") and v.Parent and v:FindFirstChild("TouchInterest") then
             local nameLower = (v.Name or ""):lower()
-            local parentNameLower = (v.Parent and v.Parent.Name or ""):lower()
             
-            -- Проверка на монету
-            local isCoin = false
-            
-            if nameLower == "coin" or nameLower == "money" then
-                isCoin = true
-            elseif string.find(nameLower, "coin") and v.Size.X < 5 then
-                isCoin = true
-            elseif v.BrickColor == BrickColor.new("Bright yellow") and v.Size.X < 3 and v.CanTouch then
-                isCoin = true
-            elseif parentNameLower == "coins" or parentNameLower == "coin" then
-                isCoin = true
-            end
-            
-            if isCoin and v:FindFirstChild("TouchInterest") then
+            if nameLower == "coin" or 
+               nameLower == "money" or 
+               string.find(nameLower, "coin") or
+               (v.BrickColor == BrickColor.new("Bright yellow") and v.Size.X < 5) then
                 table.insert(coins, v)
             end
         end
@@ -64,7 +160,6 @@ local function getCoins()
     return coins
 end
 
--- Получение ближайшей монеты
 local function getNearestCoin()
     local coins = getCoins()
     if #coins == 0 then return nil end
@@ -153,28 +248,20 @@ local function setNoclip(state)
     end
 end
 
--- Движение к цели (через WalkToPoint, без телепортации)
+-- Движение к цели
 local function walkTo(position)
     if not LocalPlayer.Character then return false end
     
     local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-    local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not humanoid then return false end
     
-    if not humanoid or not rootPart then return false end
-    
-    -- Устанавливаем скорость бега
     humanoid.WalkSpeed = 22
-    
-    -- Устанавливаем цель для движения
     humanoid:MoveTo(position)
-    
-    -- Включаем автоматическое перемещение
     humanoid.AutoRotate = true
     
     return true
 end
 
--- Остановка движения
 local function stopMoving()
     if not LocalPlayer.Character then return end
     
@@ -183,10 +270,11 @@ local function stopMoving()
         humanoid:MoveTo(Vector3.new(9e9, 9e9, 9e9))
         task.wait()
         humanoid:MoveTo(LocalPlayer.Character.HumanoidRootPart.Position)
+        humanoid.WalkSpeed = 16
     end
 end
 
--- Уклонение от игрока (быстрое перемещение без телепортации)
+-- Уклонение от игрока
 local function evadeFromPlayer(playerRoot)
     if not LocalPlayer.Character then return end
     
@@ -195,30 +283,18 @@ local function evadeFromPlayer(playerRoot)
     
     if not humanoid or not rootPart then return end
     
-    -- Направление от игрока
     local direction = (rootPart.Position - playerRoot.Position).Unit
-    local evadePosition = rootPart.Position + direction * 40
-    
-    -- Ограничиваем высоту
+    local evadePosition = rootPart.Position + direction * 45
     evadePosition = Vector3.new(evadePosition.X, rootPart.Position.Y, evadePosition.Z)
     
-    -- Включаем ноклип для прохода сквозь стены
     setNoclip(true)
-    
-    -- Увеличиваем скорость для быстрого уклонения
     local oldSpeed = humanoid.WalkSpeed
-    humanoid.WalkSpeed = 45
-    
-    -- Бежим в безопасное место
+    humanoid.WalkSpeed = 50
     humanoid:MoveTo(evadePosition)
     
-    -- Ждем немного
     task.wait(1.5)
     
-    -- Возвращаем нормальную скорость
     humanoid.WalkSpeed = oldSpeed
-    
-    -- Выключаем ноклип
     setNoclip(false)
 end
 
@@ -227,19 +303,32 @@ local function startFarmer()
     if currentConnection then return end
     
     isRunning = true
-    print("[SWILL] Фармер активирован - естественное движение, без телепортаций")
+    print("[SWILL] Фармер активирован - полная детекция экранов")
     
     currentConnection = RunService.Heartbeat:Connect(function()
         if not isRunning then return end
         
-        -- Проверка экрана ожидания
-        if isWaitingForTurn() then
+        -- ПРОВЕРКА АКТИВНОСТИ ИГРЫ (расширенная)
+        local active = isGameActuallyActive()
+        
+        -- Если игра не активна (лобби, ожидание, спектатор)
+        if not active then
+            if isGameActive ~= active then
+                print("[SWILL] Игра не активна (лобби/ожидание) - бот остановлен")
+                isGameActive = active
+            end
             stopMoving()
+            setNoclip(false)
             if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
                 LocalPlayer.Character.Humanoid.WalkSpeed = 16
             end
-            setNoclip(false)
             return
+        end
+        
+        -- Игра активна
+        if not isGameActive and active then
+            print("[SWILL] Игра активна - бот работает")
+            isGameActive = active
         end
         
         if not LocalPlayer.Character then return end
@@ -252,7 +341,6 @@ local function startFarmer()
         -- Проверка близких игроков
         local nearbyPlayers = getNearbyPlayers(40)
         
-        -- Если есть игрок рядом и мы не в режиме уклонения
         if #nearbyPlayers > 0 and not isEvading then
             isEvading = true
             stopMoving()
@@ -261,33 +349,27 @@ local function startFarmer()
             return
         end
         
-        -- Если нет игроков рядом
         if #nearbyPlayers == 0 and not isEvading then
-            -- Выключаем ноклип
             setNoclip(false)
             
-            -- Ищем ближайшую монету
             local targetCoin, distToCoin = getNearestCoin()
             
             if targetCoin and distToCoin > 3 then
-                -- Если монета далеко - идем к ней
-                currentTarget = targetCoin
                 walkTo(targetCoin.Position)
-                
-                -- Поворачиваемся к монете
-                rootPart.CFrame = CFrame.new(rootPart.Position, targetCoin.Position)
-                
+                if rootPart then
+                    rootPart.CFrame = CFrame.new(rootPart.Position, targetCoin.Position)
+                end
             elseif targetCoin and distToCoin <= 3 then
-                -- Если монета рядом - останавливаемся и ждем сбора
                 stopMoving()
                 humanoid.WalkSpeed = 16
-                
             else
-                -- Если монет нет - случайное блуждание
-                if not currentTarget or (currentTarget and (currentTarget.Position - rootPart.Position).Magnitude < 2) then
-                    local randomPos = rootPart.Position + Vector3.new(math.random(-30, 30), 0, math.random(-30, 30))
+                -- Случайное блуждание только если есть монеты на карте
+                if #getCoins() > 0 then
+                    local randomPos = rootPart.Position + Vector3.new(math.random(-25, 25), 0, math.random(-25, 25))
                     randomPos = Vector3.new(randomPos.X, rootPart.Position.Y, randomPos.Z)
                     walkTo(randomPos)
+                else
+                    stopMoving()
                 end
             end
         end
@@ -304,7 +386,7 @@ local function stopFarmer()
     setNoclip(false)
     isRunning = false
     isEvading = false
-    currentTarget = nil
+    isGameActive = false
     
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
         LocalPlayer.Character.Humanoid.WalkSpeed = 16
@@ -317,10 +399,11 @@ end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "SWILL_MM2_GUI"
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 220, 0, 120)
-frame.Position = UDim2.new(0.5, -110, 0.8, 0)
+frame.Size = UDim2.new(0, 240, 0, 150)
+frame.Position = UDim2.new(0.5, -120, 0.8, 0)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
 frame.BackgroundTransparency = 0.15
 frame.BorderSizePixel = 0
@@ -333,7 +416,7 @@ corner.Parent = frame
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 30)
 title.Position = UDim2.new(0, 0, 0, 0)
-title.Text = "SWILL FARMER V5"
+title.Text = "SWILL FARMER V6"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.BackgroundTransparency = 1
 title.Font = Enum.Font.GothamBold
@@ -350,9 +433,19 @@ statusText.Font = Enum.Font.Gotham
 statusText.TextSize = 11
 statusText.Parent = frame
 
+local gameStatusText = Instance.new("TextLabel")
+gameStatusText.Size = UDim2.new(1, 0, 0, 20)
+gameStatusText.Position = UDim2.new(0, 0, 0, 55)
+gameStatusText.Text = "ИГРА: ПРОВЕРКА..."
+gameStatusText.TextColor3 = Color3.fromRGB(255, 200, 100)
+gameStatusText.BackgroundTransparency = 1
+gameStatusText.Font = Enum.Font.Gotham
+gameStatusText.TextSize = 10
+gameStatusText.Parent = frame
+
 local toggleButton = Instance.new("TextButton")
 toggleButton.Size = UDim2.new(0.8, 0, 0, 35)
-toggleButton.Position = UDim2.new(0.1, 0, 0, 70)
+toggleButton.Position = UDim2.new(0.1, 0, 0, 100)
 toggleButton.Text = "▶ СТАРТ"
 toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 toggleButton.BackgroundColor3 = Color3.fromRGB(0, 120, 0)
@@ -363,6 +456,22 @@ toggleButton.Parent = frame
 local buttonCorner = Instance.new("UICorner")
 buttonCorner.CornerRadius = UDim.new(0, 8)
 buttonCorner.Parent = toggleButton
+
+-- Обновление статуса игры в GUI
+spawn(function()
+    while task.wait(0.5) do
+        if screenGui and screenGui.Parent then
+            local active = isGameActuallyActive()
+            if active then
+                gameStatusText.Text = "ИГРА: АКТИВНА ▶"
+                gameStatusText.TextColor3 = Color3.fromRGB(100, 255, 100)
+            else
+                gameStatusText.Text = "ИГРА: ЛОББИ/ОЖИДАНИЕ ⏸"
+                gameStatusText.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
+        end
+    end
+end)
 
 toggleButton.MouseButton1Click:Connect(function()
     if not isRunning then
@@ -389,5 +498,6 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     end
 end)
 
-print("[SWILL] V5 ЗАГРУЖЕН - ПОЛНОСТЬЮ ПЕРЕРАБОТАНО ДВИЖЕНИЕ")
-print("[SWILL] Бот использует WalkToPoint, никаких телепортаций и улетаний")
+print("[SWILL] V6 ЗАГРУЖЕН - РАСШИРЕННАЯ ДЕТЕКЦИЯ ЭКРАНОВ")
+print("[SWILL] Отслеживаются: WAITING, SPECTATOR, LOBBY, GAME OVER, YOU DIED")
+print("[SWILL] Бот активен только в активном раунде с монетами")
