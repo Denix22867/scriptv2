@@ -12,7 +12,7 @@ local isRunning = false
 local isEvading = false
 local isGameActive = false
 local currentNoclip = nil
-local currentConnection = nil
+local currentConnection = nil 
 local detectionTarget = nil   -- Объект, наличие которого говорит об активной игре
 local debugMode = true
 
